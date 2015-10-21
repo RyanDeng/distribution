@@ -21,13 +21,11 @@ import (
 // error paths that might be seen during an upload.
 func TestSimpleBlobUpload(t *testing.T) {
 	randomDataReader, tarSumStr, err := testutil.CreateRandomTarFile()
-
 	if err != nil {
 		t.Fatalf("error creating random reader: %v", err)
 	}
 
 	dgst := digest.Digest(tarSumStr)
-
 	if err != nil {
 		t.Fatalf("error allocating upload store: %v", err)
 	}
@@ -35,7 +33,10 @@ func TestSimpleBlobUpload(t *testing.T) {
 	ctx := context.Background()
 	imageName := "foo/bar"
 	driver := inmemory.New()
-	registry := NewRegistryWithDriver(ctx, driver, memory.NewInMemoryBlobDescriptorCacheProvider())
+	registry, err := NewRegistry(ctx, driver, BlobDescriptorCacheProvider(memory.NewInMemoryBlobDescriptorCacheProvider()), EnableDelete, EnableRedirect)
+	if err != nil {
+		t.Fatalf("error creating registry: %v", err)
+	}
 	repository, err := registry.Repository(ctx, imageName)
 	if err != nil {
 		t.Fatalf("unexpected error getting repo: %v", err)
@@ -139,6 +140,75 @@ func TestSimpleBlobUpload(t *testing.T) {
 	if digest.NewDigest("sha256", h) != sha256Digest {
 		t.Fatalf("unexpected digest from uploaded layer: %q != %q", digest.NewDigest("sha256", h), sha256Digest)
 	}
+
+	// Delete a blob
+	err = bs.Delete(ctx, desc.Digest)
+	if err != nil {
+		t.Fatalf("Unexpected error deleting blob")
+	}
+
+	d, err := bs.Stat(ctx, desc.Digest)
+	if err == nil {
+		t.Fatalf("unexpected non-error stating deleted blob: %v", d)
+	}
+
+	switch err {
+	case distribution.ErrBlobUnknown:
+		break
+	default:
+		t.Errorf("Unexpected error type stat-ing deleted manifest: %#v", err)
+	}
+
+	_, err = bs.Open(ctx, desc.Digest)
+	if err == nil {
+		t.Fatalf("unexpected success opening deleted blob for read")
+	}
+
+	switch err {
+	case distribution.ErrBlobUnknown:
+		break
+	default:
+		t.Errorf("Unexpected error type getting deleted manifest: %#v", err)
+	}
+
+	// Re-upload the blob
+	randomBlob, err := ioutil.ReadAll(randomDataReader)
+	if err != nil {
+		t.Fatalf("Error reading all of blob %s", err.Error())
+	}
+	expectedDigest, err := digest.FromBytes(randomBlob)
+	if err != nil {
+		t.Fatalf("Error getting digest from bytes: %s", err)
+	}
+	simpleUpload(t, bs, randomBlob, expectedDigest)
+
+	d, err = bs.Stat(ctx, expectedDigest)
+	if err != nil {
+		t.Errorf("unexpected error stat-ing blob")
+	}
+	if d.Digest != expectedDigest {
+		t.Errorf("Mismatching digest with restored blob")
+	}
+
+	_, err = bs.Open(ctx, expectedDigest)
+	if err != nil {
+		t.Errorf("Unexpected error opening blob")
+	}
+
+	// Reuse state to test delete with a delete-disabled registry
+	registry, err = NewRegistry(ctx, driver, BlobDescriptorCacheProvider(memory.NewInMemoryBlobDescriptorCacheProvider()), EnableRedirect)
+	if err != nil {
+		t.Fatalf("error creating registry: %v", err)
+	}
+	repository, err = registry.Repository(ctx, imageName)
+	if err != nil {
+		t.Fatalf("unexpected error getting repo: %v", err)
+	}
+	bs = repository.Blobs(ctx)
+	err = bs.Delete(ctx, desc.Digest)
+	if err == nil {
+		t.Errorf("Unexpected success deleting while disabled")
+	}
 }
 
 // TestSimpleBlobRead just creates a simple blob file and ensures that basic
@@ -148,7 +218,10 @@ func TestSimpleBlobRead(t *testing.T) {
 	ctx := context.Background()
 	imageName := "foo/bar"
 	driver := inmemory.New()
-	registry := NewRegistryWithDriver(ctx, driver, memory.NewInMemoryBlobDescriptorCacheProvider())
+	registry, err := NewRegistry(ctx, driver, BlobDescriptorCacheProvider(memory.NewInMemoryBlobDescriptorCacheProvider()), EnableDelete, EnableRedirect)
+	if err != nil {
+		t.Fatalf("error creating registry: %v", err)
+	}
 	repository, err := registry.Repository(ctx, imageName)
 	if err != nil {
 		t.Fatalf("unexpected error getting repo: %v", err)
@@ -178,7 +251,7 @@ func TestSimpleBlobRead(t *testing.T) {
 		t.Fatalf("error getting seeker size for random layer: %v", err)
 	}
 
-	descBefore := distribution.Descriptor{Digest: dgst, MediaType: "application/octet-stream", Length: randomLayerSize}
+	descBefore := distribution.Descriptor{Digest: dgst, MediaType: "application/octet-stream", Size: randomLayerSize}
 	t.Logf("desc: %v", descBefore)
 
 	desc, err = addBlob(ctx, bs, descBefore, randomLayerReader)
@@ -186,8 +259,8 @@ func TestSimpleBlobRead(t *testing.T) {
 		t.Fatalf("error adding blob to blobservice: %v", err)
 	}
 
-	if desc.Length != randomLayerSize {
-		t.Fatalf("committed blob has incorrect length: %v != %v", desc.Length, randomLayerSize)
+	if desc.Size != randomLayerSize {
+		t.Fatalf("committed blob has incorrect length: %v != %v", desc.Size, randomLayerSize)
 	}
 
 	rc, err = bs.Open(ctx, desc.Digest) // note that we are opening with original digest.
@@ -252,19 +325,27 @@ func TestLayerUploadZeroLength(t *testing.T) {
 	ctx := context.Background()
 	imageName := "foo/bar"
 	driver := inmemory.New()
-	registry := NewRegistryWithDriver(ctx, driver, memory.NewInMemoryBlobDescriptorCacheProvider())
+	registry, err := NewRegistry(ctx, driver, BlobDescriptorCacheProvider(memory.NewInMemoryBlobDescriptorCacheProvider()), EnableDelete, EnableRedirect)
+	if err != nil {
+		t.Fatalf("error creating registry: %v", err)
+	}
 	repository, err := registry.Repository(ctx, imageName)
 	if err != nil {
 		t.Fatalf("unexpected error getting repo: %v", err)
 	}
 	bs := repository.Blobs(ctx)
 
+	simpleUpload(t, bs, []byte{}, digest.DigestSha256EmptyTar)
+}
+
+func simpleUpload(t *testing.T, bs distribution.BlobIngester, blob []byte, expectedDigest digest.Digest) {
+	ctx := context.Background()
 	wr, err := bs.Create(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error starting upload: %v", err)
 	}
 
-	nn, err := io.Copy(wr, bytes.NewReader([]byte{}))
+	nn, err := io.Copy(wr, bytes.NewReader(blob))
 	if err != nil {
 		t.Fatalf("error copying into blob writer: %v", err)
 	}
@@ -273,12 +354,12 @@ func TestLayerUploadZeroLength(t *testing.T) {
 		t.Fatalf("unexpected number of bytes copied: %v > 0", nn)
 	}
 
-	dgst, err := digest.FromReader(bytes.NewReader([]byte{}))
+	dgst, err := digest.FromReader(bytes.NewReader(blob))
 	if err != nil {
-		t.Fatalf("error getting zero digest: %v", err)
+		t.Fatalf("error getting digest: %v", err)
 	}
 
-	if dgst != digest.DigestSha256EmptyTar {
+	if dgst != expectedDigest {
 		// sanity check on zero digest
 		t.Fatalf("digest not as expected: %v != %v", dgst, digest.DigestTarSumV1EmptyTar)
 	}
@@ -330,8 +411,8 @@ func addBlob(ctx context.Context, bs distribution.BlobIngester, desc distributio
 
 	if nn, err := io.Copy(wr, rd); err != nil {
 		return distribution.Descriptor{}, err
-	} else if nn != desc.Length {
-		return distribution.Descriptor{}, fmt.Errorf("incorrect number of bytes copied: %v != %v", nn, desc.Length)
+	} else if nn != desc.Size {
+		return distribution.Descriptor{}, fmt.Errorf("incorrect number of bytes copied: %v != %v", nn, desc.Size)
 	}
 
 	return wr.Commit(ctx, desc)

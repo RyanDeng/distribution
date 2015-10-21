@@ -6,7 +6,7 @@ import (
 	"github.com/docker/distribution"
 	"github.com/docker/distribution/context"
 	"github.com/docker/distribution/digest"
-	"github.com/docker/distribution/registry/api/v2"
+	"github.com/docker/distribution/reference"
 	"github.com/docker/distribution/registry/storage/cache"
 )
 
@@ -26,7 +26,7 @@ func NewInMemoryBlobDescriptorCacheProvider() cache.BlobDescriptorCacheProvider 
 }
 
 func (imbdcp *inMemoryBlobDescriptorCacheProvider) RepositoryScoped(repo string) (distribution.BlobDescriptorService, error) {
-	if err := v2.ValidateRepositoryName(repo); err != nil {
+	if _, err := reference.ParseNamed(repo); err != nil {
 		return nil, err
 	}
 
@@ -42,6 +42,10 @@ func (imbdcp *inMemoryBlobDescriptorCacheProvider) RepositoryScoped(repo string)
 
 func (imbdcp *inMemoryBlobDescriptorCacheProvider) Stat(ctx context.Context, dgst digest.Digest) (distribution.Descriptor, error) {
 	return imbdcp.global.Stat(ctx, dgst)
+}
+
+func (imbdcp *inMemoryBlobDescriptorCacheProvider) Clear(ctx context.Context, dgst digest.Digest) error {
+	return imbdcp.global.Clear(ctx, dgst)
 }
 
 func (imbdcp *inMemoryBlobDescriptorCacheProvider) SetDescriptor(ctx context.Context, dgst digest.Digest, desc distribution.Descriptor) error {
@@ -78,6 +82,14 @@ func (rsimbdcp *repositoryScopedInMemoryBlobDescriptorCache) Stat(ctx context.Co
 	}
 
 	return rsimbdcp.repository.Stat(ctx, dgst)
+}
+
+func (rsimbdcp *repositoryScopedInMemoryBlobDescriptorCache) Clear(ctx context.Context, dgst digest.Digest) error {
+	if rsimbdcp.repository == nil {
+		return distribution.ErrBlobUnknown
+	}
+
+	return rsimbdcp.repository.Clear(ctx, dgst)
 }
 
 func (rsimbdcp *repositoryScopedInMemoryBlobDescriptorCache) SetDescriptor(ctx context.Context, dgst digest.Digest, desc distribution.Descriptor) error {
@@ -131,6 +143,14 @@ func (mbdc *mapBlobDescriptorCache) Stat(ctx context.Context, dgst digest.Digest
 	}
 
 	return desc, nil
+}
+
+func (mbdc *mapBlobDescriptorCache) Clear(ctx context.Context, dgst digest.Digest) error {
+	mbdc.mu.Lock()
+	defer mbdc.mu.Unlock()
+
+	delete(mbdc.descriptors, dgst)
+	return nil
 }
 
 func (mbdc *mapBlobDescriptorCache) SetDescriptor(ctx context.Context, dgst digest.Digest, desc distribution.Descriptor) error {

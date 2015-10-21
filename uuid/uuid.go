@@ -8,7 +8,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
-	"log"
+	"os"
 	"syscall"
 	"time"
 )
@@ -29,7 +29,7 @@ var (
 
 	// Loggerf can be used to override the default logging destination. Such
 	// log messages in this library should be logged at warning or higher.
-	Loggerf = log.Printf
+	Loggerf = func(format string, args ...interface{}) {}
 )
 
 // UUID represents a UUID value. UUIDs can be compared and set to other values
@@ -48,6 +48,7 @@ func Generate() (u UUID) {
 
 	var (
 		totalBackoff time.Duration
+		count        int
 		retries      int
 	)
 
@@ -59,21 +60,18 @@ func Generate() (u UUID) {
 		time.Sleep(b)
 		totalBackoff += b
 
-		_, err := io.ReadFull(rand.Reader, u[:])
+		n, err := io.ReadFull(rand.Reader, u[count:])
 		if err != nil {
-			if err == syscall.EPERM {
-				// EPERM represents an entropy pool exhaustion, a condition under
-				// which we backoff and retry.
-				if retries < maxretries {
-					retries++
-					Loggerf("error generating version 4 uuid, retrying: %v", err)
-					continue
-				}
+			if retryOnError(err) && retries < maxretries {
+				count += n
+				retries++
+				Loggerf("error generating version 4 uuid, retrying: %v", err)
+				continue
 			}
 
 			// Any other errors represent a system problem. What did someone
 			// do to /dev/urandom?
-			panic(fmt.Errorf("error reading random number generator, retried for %v: %v", totalBackoff, err))
+			panic(fmt.Errorf("error reading random number generator, retried for %v: %v", totalBackoff.String(), err))
 		}
 
 		break
@@ -109,4 +107,20 @@ func Parse(s string) (u UUID, err error) {
 
 func (u UUID) String() string {
 	return fmt.Sprintf(format, u[:4], u[4:6], u[6:8], u[8:10], u[10:])
+}
+
+// retryOnError tries to detect whether or not retrying would be fruitful.
+func retryOnError(err error) bool {
+	switch err := err.(type) {
+	case *os.PathError:
+		return retryOnError(err.Err) // unpack the target error
+	case syscall.Errno:
+		if err == syscall.EPERM {
+			// EPERM represents an entropy pool exhaustion, a condition under
+			// which we backoff and retry.
+			return true
+		}
+	}
+
+	return false
 }

@@ -3,23 +3,25 @@ package client
 import (
 	"bytes"
 	"crypto/rand"
-	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/docker/distribution/uuid"
 
 	"github.com/docker/distribution"
 	"github.com/docker/distribution/context"
 	"github.com/docker/distribution/digest"
 	"github.com/docker/distribution/manifest"
-	"github.com/docker/distribution/registry/api/v2"
+	"github.com/docker/distribution/manifest/schema1"
+	"github.com/docker/distribution/registry/api/errcode"
 	"github.com/docker/distribution/testutil"
+	"github.com/docker/distribution/uuid"
+	"github.com/docker/libtrust"
 )
 
 func testServer(rrm testutil.RequestResponseMap) (string, func()) {
@@ -45,6 +47,7 @@ func newRandomBlob(size int) (digest.Digest, []byte) {
 }
 
 func addTestFetch(repo string, dgst digest.Digest, content []byte, m *testutil.RequestResponseMap) {
+
 	*m = append(*m, testutil.RequestResponseMapping{
 		Request: testutil.Request{
 			Method: "GET",
@@ -59,6 +62,7 @@ func addTestFetch(repo string, dgst digest.Digest, content []byte, m *testutil.R
 			}),
 		},
 	})
+
 	*m = append(*m, testutil.RequestResponseMapping{
 		Request: testutil.Request{
 			Method: "HEAD",
@@ -72,6 +76,61 @@ func addTestFetch(repo string, dgst digest.Digest, content []byte, m *testutil.R
 			}),
 		},
 	})
+}
+
+func addTestCatalog(route string, content []byte, link string, m *testutil.RequestResponseMap) {
+	headers := map[string][]string{
+		"Content-Length": {strconv.Itoa(len(content))},
+		"Content-Type":   {"application/json; charset=utf-8"},
+	}
+	if link != "" {
+		headers["Link"] = append(headers["Link"], link)
+	}
+
+	*m = append(*m, testutil.RequestResponseMapping{
+		Request: testutil.Request{
+			Method: "GET",
+			Route:  route,
+		},
+		Response: testutil.Response{
+			StatusCode: http.StatusOK,
+			Body:       content,
+			Headers:    http.Header(headers),
+		},
+	})
+}
+
+func TestBlobDelete(t *testing.T) {
+	dgst, _ := newRandomBlob(1024)
+	var m testutil.RequestResponseMap
+	repo := "test.example.com/repo1"
+	m = append(m, testutil.RequestResponseMapping{
+		Request: testutil.Request{
+			Method: "DELETE",
+			Route:  "/v2/" + repo + "/blobs/" + dgst.String(),
+		},
+		Response: testutil.Response{
+			StatusCode: http.StatusAccepted,
+			Headers: http.Header(map[string][]string{
+				"Content-Length": {"0"},
+			}),
+		},
+	})
+
+	e, c := testServer(m)
+	defer c()
+
+	ctx := context.Background()
+	r, err := NewRepository(ctx, repo, e, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := r.Blobs(ctx)
+	err = l.Delete(ctx, dgst)
+	if err != nil {
+		t.Errorf("Error deleting blob: %s", err.Error())
+	}
+
 }
 
 func TestBlobFetch(t *testing.T) {
@@ -124,8 +183,8 @@ func TestBlobExists(t *testing.T) {
 		t.Fatalf("Unexpected digest: %s, expected %s", stat.Digest, d1)
 	}
 
-	if stat.Length != int64(len(b1)) {
-		t.Fatalf("Unexpected length: %d, expected %d", stat.Length, len(b1))
+	if stat.Size != int64(len(b1)) {
+		t.Fatalf("Unexpected length: %d, expected %d", stat.Size, len(b1))
 	}
 
 	// TODO(dmcgowan): Test error cases and ErrBlobUnknown case
@@ -241,14 +300,14 @@ func TestBlobUploadChunked(t *testing.T) {
 
 	blob, err := upload.Commit(ctx, distribution.Descriptor{
 		Digest: dgst,
-		Length: int64(len(b1)),
+		Size:   int64(len(b1)),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if blob.Length != int64(len(b1)) {
-		t.Fatalf("Unexpected blob size: %d; expected: %d", blob.Length, len(b1))
+	if blob.Size != int64(len(b1)) {
+		t.Fatalf("Unexpected blob size: %d; expected: %d", blob.Size, len(b1))
 	}
 }
 
@@ -349,52 +408,94 @@ func TestBlobUploadMonolithic(t *testing.T) {
 
 	blob, err := upload.Commit(ctx, distribution.Descriptor{
 		Digest: dgst,
-		Length: int64(len(b1)),
+		Size:   int64(len(b1)),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if blob.Length != int64(len(b1)) {
-		t.Fatalf("Unexpected blob size: %d; expected: %d", blob.Length, len(b1))
+	if blob.Size != int64(len(b1)) {
+		t.Fatalf("Unexpected blob size: %d; expected: %d", blob.Size, len(b1))
 	}
 }
 
-func newRandomSchemaV1Manifest(name, tag string, blobCount int) (*manifest.SignedManifest, digest.Digest) {
-	blobs := make([]manifest.FSLayer, blobCount)
-	history := make([]manifest.History, blobCount)
+func newRandomSchemaV1Manifest(name, tag string, blobCount int) (*schema1.SignedManifest, digest.Digest, []byte) {
+	blobs := make([]schema1.FSLayer, blobCount)
+	history := make([]schema1.History, blobCount)
 
 	for i := 0; i < blobCount; i++ {
 		dgst, blob := newRandomBlob((i % 5) * 16)
 
-		blobs[i] = manifest.FSLayer{BlobSum: dgst}
-		history[i] = manifest.History{V1Compatibility: fmt.Sprintf("{\"Hex\": \"%x\"}", blob)}
+		blobs[i] = schema1.FSLayer{BlobSum: dgst}
+		history[i] = schema1.History{V1Compatibility: fmt.Sprintf("{\"Hex\": \"%x\"}", blob)}
 	}
 
-	m := &manifest.SignedManifest{
-		Manifest: manifest.Manifest{
-			Name:         name,
-			Tag:          tag,
-			Architecture: "x86",
-			FSLayers:     blobs,
-			History:      history,
-			Versioned: manifest.Versioned{
-				SchemaVersion: 1,
-			},
+	m := schema1.Manifest{
+		Name:         name,
+		Tag:          tag,
+		Architecture: "x86",
+		FSLayers:     blobs,
+		History:      history,
+		Versioned: manifest.Versioned{
+			SchemaVersion: 1,
 		},
 	}
-	manifestBytes, err := json.Marshal(m)
-	if err != nil {
-		panic(err)
-	}
-	dgst, err := digest.FromBytes(manifestBytes)
+
+	pk, err := libtrust.GenerateECP256PrivateKey()
 	if err != nil {
 		panic(err)
 	}
 
-	m.Raw = manifestBytes
+	sm, err := schema1.Sign(&m, pk)
+	if err != nil {
+		panic(err)
+	}
 
-	return m, dgst
+	p, err := sm.Payload()
+	if err != nil {
+		panic(err)
+	}
+
+	dgst, err := digest.FromBytes(p)
+	if err != nil {
+		panic(err)
+	}
+
+	return sm, dgst, p
+}
+
+func addTestManifestWithEtag(repo, reference string, content []byte, m *testutil.RequestResponseMap, dgst string) {
+	actualDigest, _ := digest.FromBytes(content)
+	getReqWithEtag := testutil.Request{
+		Method: "GET",
+		Route:  "/v2/" + repo + "/manifests/" + reference,
+		Headers: http.Header(map[string][]string{
+			"If-None-Match": {fmt.Sprintf(`"%s"`, dgst)},
+		}),
+	}
+
+	var getRespWithEtag testutil.Response
+	if actualDigest.String() == dgst {
+		getRespWithEtag = testutil.Response{
+			StatusCode: http.StatusNotModified,
+			Body:       []byte{},
+			Headers: http.Header(map[string][]string{
+				"Content-Length": {"0"},
+				"Last-Modified":  {time.Now().Add(-1 * time.Second).Format(time.ANSIC)},
+			}),
+		}
+	} else {
+		getRespWithEtag = testutil.Response{
+			StatusCode: http.StatusOK,
+			Body:       content,
+			Headers: http.Header(map[string][]string{
+				"Content-Length": {fmt.Sprint(len(content))},
+				"Last-Modified":  {time.Now().Add(-1 * time.Second).Format(time.ANSIC)},
+			}),
+		}
+
+	}
+	*m = append(*m, testutil.RequestResponseMapping{Request: getReqWithEtag, Response: getRespWithEtag})
 }
 
 func addTestManifest(repo, reference string, content []byte, m *testutil.RequestResponseMap) {
@@ -428,7 +529,7 @@ func addTestManifest(repo, reference string, content []byte, m *testutil.Request
 
 }
 
-func checkEqualManifest(m1, m2 *manifest.SignedManifest) error {
+func checkEqualManifest(m1, m2 *schema1.SignedManifest) error {
 	if m1.Name != m2.Name {
 		return fmt.Errorf("name does not match %q != %q", m1.Name, m2.Name)
 	}
@@ -455,8 +556,9 @@ func checkEqualManifest(m1, m2 *manifest.SignedManifest) error {
 }
 
 func TestManifestFetch(t *testing.T) {
+	ctx := context.Background()
 	repo := "test.example.com/repo"
-	m1, dgst := newRandomSchemaV1Manifest(repo, "latest", 6)
+	m1, dgst, _ := newRandomSchemaV1Manifest(repo, "latest", 6)
 	var m testutil.RequestResponseMap
 	addTestManifest(repo, dgst.String(), m1.Raw, &m)
 
@@ -467,7 +569,10 @@ func TestManifestFetch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ms := r.Manifests()
+	ms, err := r.Manifests(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	ok, err := ms.Exists(dgst)
 	if err != nil {
@@ -486,11 +591,11 @@ func TestManifestFetch(t *testing.T) {
 	}
 }
 
-func TestManifestFetchByTag(t *testing.T) {
+func TestManifestFetchWithEtag(t *testing.T) {
 	repo := "test.example.com/repo/by/tag"
-	m1, _ := newRandomSchemaV1Manifest(repo, "latest", 6)
+	_, d1, p1 := newRandomSchemaV1Manifest(repo, "latest", 6)
 	var m testutil.RequestResponseMap
-	addTestManifest(repo, "latest", m1.Raw, &m)
+	addTestManifestWithEtag(repo, "latest", p1, &m, d1.String())
 
 	e, c := testServer(m)
 	defer c()
@@ -499,29 +604,22 @@ func TestManifestFetchByTag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	ms := r.Manifests()
-	ok, err := ms.ExistsByTag("latest")
+	ctx := context.Background()
+	ms, err := r.Manifests(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ok {
-		t.Fatal("Manifest does not exist")
-	}
 
-	manifest, err := ms.GetByTag("latest")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := checkEqualManifest(manifest, m1); err != nil {
+	_, err = ms.GetByTag("latest", AddEtagToTag("latest", d1.String()))
+	if err != distribution.ErrManifestNotModified {
 		t.Fatal(err)
 	}
 }
 
 func TestManifestDelete(t *testing.T) {
 	repo := "test.example.com/repo/delete"
-	_, dgst1 := newRandomSchemaV1Manifest(repo, "latest", 6)
-	_, dgst2 := newRandomSchemaV1Manifest(repo, "latest", 6)
+	_, dgst1, _ := newRandomSchemaV1Manifest(repo, "latest", 6)
+	_, dgst2, _ := newRandomSchemaV1Manifest(repo, "latest", 6)
 	var m testutil.RequestResponseMap
 	m = append(m, testutil.RequestResponseMapping{
 		Request: testutil.Request{
@@ -529,7 +627,7 @@ func TestManifestDelete(t *testing.T) {
 			Route:  "/v2/" + repo + "/manifests/" + dgst1.String(),
 		},
 		Response: testutil.Response{
-			StatusCode: http.StatusOK,
+			StatusCode: http.StatusAccepted,
 			Headers: http.Header(map[string][]string{
 				"Content-Length": {"0"},
 			}),
@@ -543,8 +641,12 @@ func TestManifestDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ctx := context.Background()
+	ms, err := r.Manifests(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	ms := r.Manifests()
 	if err := ms.Delete(dgst1); err != nil {
 		t.Fatal(err)
 	}
@@ -556,7 +658,7 @@ func TestManifestDelete(t *testing.T) {
 
 func TestManifestPut(t *testing.T) {
 	repo := "test.example.com/repo/delete"
-	m1, dgst := newRandomSchemaV1Manifest(repo, "other", 6)
+	m1, dgst, _ := newRandomSchemaV1Manifest(repo, "other", 6)
 	var m testutil.RequestResponseMap
 	m = append(m, testutil.RequestResponseMapping{
 		Request: testutil.Request{
@@ -580,8 +682,12 @@ func TestManifestPut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ctx := context.Background()
+	ms, err := r.Manifests(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	ms := r.Manifests()
 	if err := ms.Put(m1); err != nil {
 		t.Fatal(err)
 	}
@@ -624,8 +730,12 @@ func TestManifestTags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ctx := context.Background()
+	ms, err := r.Manifests(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	ms := r.Manifests()
 	tags, err := ms.Tags()
 	if err != nil {
 		t.Fatal(err)
@@ -641,7 +751,7 @@ func TestManifestTags(t *testing.T) {
 
 func TestManifestUnauthorized(t *testing.T) {
 	repo := "test.example.com/repo"
-	_, dgst := newRandomSchemaV1Manifest(repo, "latest", 6)
+	_, dgst, _ := newRandomSchemaV1Manifest(repo, "latest", 6)
 	var m testutil.RequestResponseMap
 
 	m = append(m, testutil.RequestResponseMapping{
@@ -662,20 +772,138 @@ func TestManifestUnauthorized(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ms := r.Manifests()
+	ctx := context.Background()
+	ms, err := r.Manifests(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, err = ms.Get(dgst)
 	if err == nil {
 		t.Fatal("Expected error fetching manifest")
 	}
-	v2Err, ok := err.(*v2.Error)
+	v2Err, ok := err.(errcode.Error)
 	if !ok {
 		t.Fatalf("Unexpected error type: %#v", err)
 	}
-	if v2Err.Code != v2.ErrorCodeUnauthorized {
+	if v2Err.Code != errcode.ErrorCodeUnauthorized {
 		t.Fatalf("Unexpected error code: %s", v2Err.Code.String())
 	}
-	if expected := "401 Unauthorized"; v2Err.Message != expected {
-		t.Fatalf("Unexpected message value: %s, expected %s", v2Err.Message, expected)
+	if expected := errcode.ErrorCodeUnauthorized.Message(); v2Err.Message != expected {
+		t.Fatalf("Unexpected message value: %q, expected %q", v2Err.Message, expected)
+	}
+}
+
+func TestCatalog(t *testing.T) {
+	var m testutil.RequestResponseMap
+	addTestCatalog(
+		"/v2/_catalog?n=5",
+		[]byte("{\"repositories\":[\"foo\", \"bar\", \"baz\"]}"), "", &m)
+
+	e, c := testServer(m)
+	defer c()
+
+	entries := make([]string, 5)
+
+	r, err := NewRegistry(context.Background(), e, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	numFilled, err := r.Repositories(ctx, entries, "")
+	if err != io.EOF {
+		t.Fatal(err)
+	}
+
+	if numFilled != 3 {
+		t.Fatalf("Got wrong number of repos")
+	}
+}
+
+func TestCatalogInParts(t *testing.T) {
+	var m testutil.RequestResponseMap
+	addTestCatalog(
+		"/v2/_catalog?n=2",
+		[]byte("{\"repositories\":[\"bar\", \"baz\"]}"),
+		"</v2/_catalog?last=baz&n=2>", &m)
+	addTestCatalog(
+		"/v2/_catalog?last=baz&n=2",
+		[]byte("{\"repositories\":[\"foo\"]}"),
+		"", &m)
+
+	e, c := testServer(m)
+	defer c()
+
+	entries := make([]string, 2)
+
+	r, err := NewRegistry(context.Background(), e, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	numFilled, err := r.Repositories(ctx, entries, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if numFilled != 2 {
+		t.Fatalf("Got wrong number of repos")
+	}
+
+	numFilled, err = r.Repositories(ctx, entries, "baz")
+	if err != io.EOF {
+		t.Fatal(err)
+	}
+
+	if numFilled != 1 {
+		t.Fatalf("Got wrong number of repos")
+	}
+}
+
+func TestSanitizeLocation(t *testing.T) {
+	for _, testcase := range []struct {
+		description string
+		location    string
+		source      string
+		expected    string
+		err         error
+	}{
+		{
+			description: "ensure relative location correctly resolved",
+			location:    "/v2/foo/baasdf",
+			source:      "http://blahalaja.com/v1",
+			expected:    "http://blahalaja.com/v2/foo/baasdf",
+		},
+		{
+			description: "ensure parameters are preserved",
+			location:    "/v2/foo/baasdf?_state=asdfasfdasdfasdf&digest=foo",
+			source:      "http://blahalaja.com/v1",
+			expected:    "http://blahalaja.com/v2/foo/baasdf?_state=asdfasfdasdfasdf&digest=foo",
+		},
+		{
+			description: "ensure new hostname overidden",
+			location:    "https://mwhahaha.com/v2/foo/baasdf?_state=asdfasfdasdfasdf",
+			source:      "http://blahalaja.com/v1",
+			expected:    "https://mwhahaha.com/v2/foo/baasdf?_state=asdfasfdasdfasdf",
+		},
+	} {
+		fatalf := func(format string, args ...interface{}) {
+			t.Fatalf(testcase.description+": "+format, args...)
+		}
+
+		s, err := sanitizeLocation(testcase.location, testcase.source)
+		if err != testcase.err {
+			if testcase.err != nil {
+				fatalf("expected error: %v != %v", err, testcase)
+			} else {
+				fatalf("unexpected error sanitizing: %v", err)
+			}
+		}
+
+		if s != testcase.expected {
+			fatalf("bad sanitize: %q != %q", s, testcase.expected)
+		}
 	}
 }

@@ -7,7 +7,7 @@ import (
 	"io/ioutil"
 	"net/http"
 
-	"github.com/docker/distribution/registry/api/v2"
+	"github.com/docker/distribution/registry/api/errcode"
 )
 
 // UnexpectedHTTPStatusError is returned when an unexpected HTTP status is
@@ -32,7 +32,7 @@ func (e *UnexpectedHTTPResponseError) Error() string {
 }
 
 func parseHTTPErrorResponse(r io.Reader) error {
-	var errors v2.Errors
+	var errors errcode.Errors
 	body, err := ioutil.ReadAll(r)
 	if err != nil {
 		return err
@@ -44,18 +44,14 @@ func parseHTTPErrorResponse(r io.Reader) error {
 			Response: body,
 		}
 	}
-	return &errors
+	return errors
 }
 
 func handleErrorResponse(resp *http.Response) error {
 	if resp.StatusCode == 401 {
 		err := parseHTTPErrorResponse(resp.Body)
 		if uErr, ok := err.(*UnexpectedHTTPResponseError); ok {
-			return &v2.Error{
-				Code:    v2.ErrorCodeUnauthorized,
-				Message: "401 Unauthorized",
-				Detail:  uErr.Response,
-			}
+			return errcode.ErrorCodeUnauthorized.WithDetail(uErr.Response)
 		}
 		return err
 	}
@@ -63,4 +59,10 @@ func handleErrorResponse(resp *http.Response) error {
 		return parseHTTPErrorResponse(resp.Body)
 	}
 	return &UnexpectedHTTPStatusError{Status: resp.Status}
+}
+
+// SuccessStatus returns true if the argument is a successful HTTP response
+// code (in the range 200 - 399 inclusive).
+func SuccessStatus(status int) bool {
+	return status >= 200 && status <= 399
 }

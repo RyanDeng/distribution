@@ -6,15 +6,16 @@ import (
 	"github.com/docker/distribution"
 	"github.com/docker/distribution/context"
 	"github.com/docker/distribution/digest"
-	"github.com/docker/distribution/manifest"
+	"github.com/docker/distribution/manifest/schema1"
 	"github.com/docker/libtrust"
 )
 
 type manifestStore struct {
-	repository    *repository
-	revisionStore *revisionStore
-	tagStore      *tagStore
-	ctx           context.Context
+	repository                 *repository
+	revisionStore              *revisionStore
+	tagStore                   *tagStore
+	ctx                        context.Context
+	skipDependencyVerification bool
 }
 
 var _ distribution.ManifestService = &manifestStore{}
@@ -34,15 +35,24 @@ func (ms *manifestStore) Exists(dgst digest.Digest) (bool, error) {
 	return true, nil
 }
 
-func (ms *manifestStore) Get(dgst digest.Digest) (*manifest.SignedManifest, error) {
+func (ms *manifestStore) Get(dgst digest.Digest) (*schema1.SignedManifest, error) {
 	context.GetLogger(ms.ctx).Debug("(*manifestStore).Get")
 	return ms.revisionStore.get(ms.ctx, dgst)
 }
 
-func (ms *manifestStore) Put(manifest *manifest.SignedManifest) error {
+// SkipLayerVerification allows a manifest to be Put before it's
+// layers are on the filesystem
+func SkipLayerVerification(ms distribution.ManifestService) error {
+	if ms, ok := ms.(*manifestStore); ok {
+		ms.skipDependencyVerification = true
+		return nil
+	}
+	return fmt.Errorf("skip layer verification only valid for manifeststore")
+}
+
+func (ms *manifestStore) Put(manifest *schema1.SignedManifest) error {
 	context.GetLogger(ms.ctx).Debug("(*manifestStore).Put")
 
-	// Verify the manifest.
 	if err := ms.verifyManifest(ms.ctx, manifest); err != nil {
 		return err
 	}
@@ -59,8 +69,8 @@ func (ms *manifestStore) Put(manifest *manifest.SignedManifest) error {
 
 // Delete removes the revision of the specified manfiest.
 func (ms *manifestStore) Delete(dgst digest.Digest) error {
-	context.GetLogger(ms.ctx).Debug("(*manifestStore).Delete - unsupported")
-	return fmt.Errorf("deletion of manifests not supported")
+	context.GetLogger(ms.ctx).Debug("(*manifestStore).Delete")
+	return ms.revisionStore.delete(ms.ctx, dgst)
 }
 
 func (ms *manifestStore) Tags() ([]string, error) {
@@ -73,7 +83,14 @@ func (ms *manifestStore) ExistsByTag(tag string) (bool, error) {
 	return ms.tagStore.exists(tag)
 }
 
-func (ms *manifestStore) GetByTag(tag string) (*manifest.SignedManifest, error) {
+func (ms *manifestStore) GetByTag(tag string, options ...distribution.ManifestServiceOption) (*schema1.SignedManifest, error) {
+	for _, option := range options {
+		err := option(ms)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	context.GetLogger(ms.ctx).Debug("(*manifestStore).GetByTag")
 	dgst, err := ms.tagStore.resolve(tag)
 	if err != nil {
@@ -87,13 +104,13 @@ func (ms *manifestStore) GetByTag(tag string) (*manifest.SignedManifest, error) 
 // perspective of the registry. It ensures that the signature is valid for the
 // enclosed payload. As a policy, the registry only tries to store valid
 // content, leaving trust policies of that content up to consumers.
-func (ms *manifestStore) verifyManifest(ctx context.Context, mnfst *manifest.SignedManifest) error {
+func (ms *manifestStore) verifyManifest(ctx context.Context, mnfst *schema1.SignedManifest) error {
 	var errs distribution.ErrManifestVerification
 	if mnfst.Name != ms.repository.Name() {
 		errs = append(errs, fmt.Errorf("repository name does not match manifest name"))
 	}
 
-	if _, err := manifest.Verify(mnfst); err != nil {
+	if _, err := schema1.Verify(mnfst); err != nil {
 		switch err {
 		case libtrust.ErrMissingSignatureKey, libtrust.ErrInvalidJSONContent, libtrust.ErrMissingSignatureKey:
 			errs = append(errs, distribution.ErrManifestUnverified{})
@@ -106,18 +123,19 @@ func (ms *manifestStore) verifyManifest(ctx context.Context, mnfst *manifest.Sig
 		}
 	}
 
-	for _, fsLayer := range mnfst.FSLayers {
-		_, err := ms.repository.Blobs(ctx).Stat(ctx, fsLayer.BlobSum)
-		if err != nil {
-			if err != distribution.ErrBlobUnknown {
-				errs = append(errs, err)
-			}
+	if !ms.skipDependencyVerification {
+		for _, fsLayer := range mnfst.FSLayers {
+			_, err := ms.repository.Blobs(ctx).Stat(ctx, fsLayer.BlobSum)
+			if err != nil {
+				if err != distribution.ErrBlobUnknown {
+					errs = append(errs, err)
+				}
 
-			// On error here, we always append unknown blob errors.
-			errs = append(errs, distribution.ErrManifestBlobUnknown{Digest: fsLayer.BlobSum})
+				// On error here, we always append unknown blob errors.
+				errs = append(errs, distribution.ErrManifestBlobUnknown{Digest: fsLayer.BlobSum})
+			}
 		}
 	}
-
 	if len(errs) != 0 {
 		return errs
 	}

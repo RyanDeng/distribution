@@ -26,7 +26,7 @@ func newSignatureStore(ctx context.Context, repo *repository, blobStore *blobSto
 var _ distribution.SignatureService = &signatureStore{}
 
 func (s *signatureStore) Get(dgst digest.Digest) ([][]byte, error) {
-	signaturesPath, err := s.blobStore.pm.path(manifestSignaturesPathSpec{
+	signaturesPath, err := pathFor(manifestSignaturesPathSpec{
 		name:     s.repository.Name(),
 		revision: dgst,
 	})
@@ -115,27 +115,28 @@ func (s *signatureStore) Put(dgst digest.Digest, signatures ...[]byte) error {
 	return nil
 }
 
-// namedBlobStore returns the namedBlobStore of the signatures for the
-// manifest with the given digest. Effectively, each singature link path
+// linkedBlobStore returns the namedBlobStore of the signatures for the
+// manifest with the given digest. Effectively, each signature link path
 // layout is a unique linked blob store.
 func (s *signatureStore) linkedBlobStore(ctx context.Context, revision digest.Digest) *linkedBlobStore {
-	linkpath := func(pm *pathMapper, name string, dgst digest.Digest) (string, error) {
-		return pm.path(manifestSignatureLinkPathSpec{
+	linkpath := func(name string, dgst digest.Digest) (string, error) {
+		return pathFor(manifestSignatureLinkPathSpec{
 			name:      name,
 			revision:  revision,
 			signature: dgst,
 		})
+
 	}
 
 	return &linkedBlobStore{
 		ctx:        ctx,
 		repository: s.repository,
 		blobStore:  s.blobStore,
-		statter: &linkedBlobStatter{
-			blobStore:  s.blobStore,
-			repository: s.repository,
-			linkPath:   linkpath,
+		blobAccessController: &linkedBlobStatter{
+			blobStore:   s.blobStore,
+			repository:  s.repository,
+			linkPathFns: []linkPathFunc{linkpath},
 		},
-		linkPath: linkpath,
+		linkPathFns: []linkPathFunc{linkpath},
 	}
 }

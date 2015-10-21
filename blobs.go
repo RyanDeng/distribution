@@ -49,8 +49,8 @@ type Descriptor struct {
 	// encoded as utf-8.
 	MediaType string `json:"mediaType,omitempty"`
 
-	// Length in bytes of content.
-	Length int64 `json:"length,omitempty"`
+	// Size in bytes of content.
+	Size int64 `json:"size,omitempty"`
 
 	// Digest uniquely identifies the content. A byte stream can be verified
 	// against against this digest.
@@ -70,6 +70,11 @@ type BlobStatter interface {
 	Stat(ctx context.Context, dgst digest.Digest) (Descriptor, error)
 }
 
+// BlobDeleter enables deleting blobs from storage.
+type BlobDeleter interface {
+	Delete(ctx context.Context, dgst digest.Digest) error
+}
+
 // BlobDescriptorService manages metadata about a blob by digest. Most
 // implementations will not expose such an interface explicitly. Such mappings
 // should be maintained by interacting with the BlobIngester. Hence, this is
@@ -87,6 +92,9 @@ type BlobDescriptorService interface {
 	// the restriction that the algorithm of the descriptor must match the
 	// canonical algorithm (ie sha256) of the annotator.
 	SetDescriptor(ctx context.Context, dgst digest.Digest, desc Descriptor) error
+
+	// Clear enables descriptors to be unlinked
+	Clear(ctx context.Context, dgst digest.Digest) error
 }
 
 // ReadSeekCloser is the primary reader type for blob data, combining
@@ -172,6 +180,9 @@ type BlobWriter interface {
 	// result in a no-op. This allows use of Cancel in a defer statement,
 	// increasing the assurance that it is correctly called.
 	Cancel(ctx context.Context) error
+
+	// Get a reader to the blob being written by this BlobWriter
+	Reader() (io.ReadCloser, error)
 }
 
 // BlobService combines the operations to access, read and write blobs. This
@@ -183,8 +194,9 @@ type BlobService interface {
 }
 
 // BlobStore represent the entire suite of blob related operations. Such an
-// implementation can access, read, write and serve blobs.
+// implementation can access, read, write, delete and serve blobs.
 type BlobStore interface {
 	BlobService
 	BlobServer
+	BlobDeleter
 }

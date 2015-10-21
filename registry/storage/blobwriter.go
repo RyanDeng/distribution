@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path"
 	"time"
 
 	"github.com/Sirupsen/logrus"
@@ -30,6 +31,8 @@ type blobWriter struct {
 	// implementes io.WriteSeeker, io.ReaderFrom and io.Closer to satisfy
 	// LayerUpload Interface
 	bufferedFileWriter
+
+	resumableDigestEnabled bool
 }
 
 var _ distribution.BlobWriter = &blobWriter{}
@@ -66,6 +69,11 @@ func (bw *blobWriter) Commit(ctx context.Context, desc distribution.Descriptor) 
 	}
 
 	if err := bw.removeResources(ctx); err != nil {
+		return distribution.Descriptor{}, err
+	}
+
+	err = bw.blobStore.blobAccessController.SetDescriptor(ctx, canonical.Digest, canonical)
+	if err != nil {
 		return distribution.Descriptor{}, err
 	}
 
@@ -147,7 +155,7 @@ func (bw *blobWriter) validateBlob(ctx context.Context, desc distribution.Descri
 			// NOTE(stevvooe): We really don't care if the file is
 			// not actually present for the reader. We now assume
 			// that the desc length is zero.
-			desc.Length = 0
+			desc.Size = 0
 		default:
 			// Any other error we want propagated up the stack.
 			return distribution.Descriptor{}, err
@@ -160,14 +168,14 @@ func (bw *blobWriter) validateBlob(ctx context.Context, desc distribution.Descri
 		bw.size = fi.Size()
 	}
 
-	if desc.Length > 0 {
-		if desc.Length != bw.size {
+	if desc.Size > 0 {
+		if desc.Size != bw.size {
 			return distribution.Descriptor{}, distribution.ErrBlobInvalidLength
 		}
 	} else {
 		// if provided 0 or negative length, we can assume caller doesn't know or
 		// care about length.
-		desc.Length = bw.size
+		desc.Size = bw.size
 	}
 
 	// TODO(stevvooe): This section is very meandering. Need to be broken down
@@ -215,7 +223,7 @@ func (bw *blobWriter) validateBlob(ctx context.Context, desc distribution.Descri
 			}
 
 			// Read the file from the backend driver and validate it.
-			fr, err := newFileReader(ctx, bw.bufferedFileWriter.driver, bw.path, desc.Length)
+			fr, err := newFileReader(ctx, bw.bufferedFileWriter.driver, bw.path, desc.Size)
 			if err != nil {
 				return distribution.Descriptor{}, err
 			}
@@ -233,7 +241,7 @@ func (bw *blobWriter) validateBlob(ctx context.Context, desc distribution.Descri
 
 	if !verified {
 		context.GetLoggerWithFields(ctx,
-			map[string]interface{}{
+			map[interface{}]interface{}{
 				"canonical": canonical,
 				"provided":  desc.Digest,
 			}, "canonical", "provided").
@@ -258,7 +266,7 @@ func (bw *blobWriter) validateBlob(ctx context.Context, desc distribution.Descri
 // identified by dgst. The layer should be validated before commencing the
 // move.
 func (bw *blobWriter) moveBlob(ctx context.Context, desc distribution.Descriptor) error {
-	blobPath, err := bw.blobStore.pm.path(blobDataPathSpec{
+	blobPath, err := pathFor(blobDataPathSpec{
 		digest: desc.Digest,
 	})
 
@@ -310,4 +318,62 @@ func (bw *blobWriter) moveBlob(ctx context.Context, desc distribution.Descriptor
 	// TODO(stevvooe): We should also write the mediatype when executing this move.
 
 	return bw.blobStore.driver.Move(ctx, bw.path, blobPath)
+}
+
+// removeResources should clean up all resources associated with the upload
+// instance. An error will be returned if the clean up cannot proceed. If the
+// resources are already not present, no error will be returned.
+func (bw *blobWriter) removeResources(ctx context.Context) error {
+	dataPath, err := pathFor(uploadDataPathSpec{
+		name: bw.blobStore.repository.Name(),
+		id:   bw.id,
+	})
+
+	if err != nil {
+		return err
+	}
+
+	// Resolve and delete the containing directory, which should include any
+	// upload related files.
+	dirPath := path.Dir(dataPath)
+	if err := bw.blobStore.driver.Delete(ctx, dirPath); err != nil {
+		switch err := err.(type) {
+		case storagedriver.PathNotFoundError:
+			break // already gone!
+		default:
+			// This should be uncommon enough such that returning an error
+			// should be okay. At this point, the upload should be mostly
+			// complete, but perhaps the backend became unaccessible.
+			context.GetLogger(ctx).Errorf("unable to delete layer upload resources %q: %v", dirPath, err)
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (bw *blobWriter) Reader() (io.ReadCloser, error) {
+	// todo(richardscothern): Change to exponential backoff, i=0.5, e=2, n=4
+	try := 1
+	for try <= 5 {
+		_, err := bw.bufferedFileWriter.driver.Stat(bw.ctx, bw.path)
+		if err == nil {
+			break
+		}
+		switch err.(type) {
+		case storagedriver.PathNotFoundError:
+			context.GetLogger(bw.ctx).Debugf("Nothing found on try %d, sleeping...", try)
+			time.Sleep(1 * time.Second)
+			try++
+		default:
+			return nil, err
+		}
+	}
+
+	readCloser, err := bw.bufferedFileWriter.driver.ReadStream(bw.ctx, bw.path, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	return readCloser, nil
 }

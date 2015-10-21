@@ -33,6 +33,7 @@ By following these simple rules you will get better and faster feedback on your 
  - please refrain from adding "same thing here" or "+1" comments
  - you don't need to comment on an issue to get notified of updates: just hit the "subscribe" button
  - comment if you have some new, technical and relevant information to add to the case
+ - __DO NOT__ comment on closed issues or merged PRs. If you think you have a related problem, open up a new issue and reference the PR or issue.
 
 ### If you have not found an existing issue that describes your problem:
 
@@ -91,30 +92,49 @@ Complying to these simple rules will greatly accelerate the review process, and 
 
 Have a look at a great, succesful contribution: the [Ceph driver PR](https://github.com/docker/distribution/pull/443)
 
+## Coding Style
 
-## Issue and PR labels
+Unless explicitly stated, we follow all coding guidelines from the Go
+community. While some of these standards may seem arbitrary, they somehow seem
+to result in a solid, consistent codebase.
 
-To keep track of the state of issues and PRs, we've adopted a set of simple labels. The following are currently in use:
+It is possible that the code base does not currently comply with these
+guidelines. We are not looking for a massive PR that fixes this, since that
+goes against the spirit of the guidelines. All new contributions should make a
+best effort to clean up and make the code base better than they left it.
+Obviously, apply your best judgement. Remember, the goal here is to make the
+code base easier for humans to navigate and understand. Always keep that in
+mind when nudging others to comply.
 
-<dl>
-    <dt><a href="https://github.com/docker/distribution/issues?q=is%3Aopen+-label%3AReady+-label%3A%22In+Progress%22+-label%3A%22Blocked%22">Backlog</a></dt>
-    <dd>Issues marked with this label are considered not yet ready for implementation. Either they are untriaged or require futher detail to proceed.</dd>
+The rules:
 
-    <dt><a href="https://github.com/docker/distribution/labels/Blocked">Blocked</a></dt>
-    <dd>If an issue requires further clarification or is blocked on an unresolved dependency, this label should be used.</dd>
+1. All code should be formatted with `gofmt -s`.
+2. All code should pass the default levels of
+   [`golint`](https://github.com/golang/lint).
+3. All code should follow the guidelines covered in [Effective
+   Go](http://golang.org/doc/effective_go.html) and [Go Code Review
+   Comments](https://github.com/golang/go/wiki/CodeReviewComments).
+4. Comment the code. Tell us the why, the history and the context.
+5. Document _all_ declarations and methods, even private ones. Declare
+   expectations, caveats and anything else that may be important. If a type
+   gets exported, having the comments already there will ensure it's ready.
+6. Variable name length should be proportional to its context and no longer.
+   `noCommaALongVariableNameLikeThisIsNotMoreClearWhenASimpleCommentWouldDo`.
+   In practice, short methods will have short variable names and globals will
+   have longer names.
+7. No underscores in package names. If you need a compound name, step back,
+   and re-examine why you need a compound name. If you still think you need a
+   compound name, lose the underscore.
+8. No utils or helpers packages. If a function is not general enough to
+   warrant its own package, it has not been written generally enough to be a
+   part of a util package. Just leave it unexported and well-documented.
+9. All tests should run with `go test` and outside tooling should not be
+   required. No, we don't need another unit testing framework. Assertion
+   packages are acceptable if they provide _real_ incremental value.
+10. Even though we call these "rules" above, they are actually just
+    guidelines. Since you've read all the rules, you now know that.
 
-    <dt><a href="https://github.com/docker/distribution/labels/Sprint">Sprint</a></dt>
-    <dd>Issues marked with this label are being worked in the current sprint. All required information should be available and design details have been worked out.</dd>
-
-    <dt><a href="https://github.com/docker/distribution/labels/In%20Progress">In Progress</a></dt>
-    <dd>The issue or PR is being actively worked on by the assignee.</dd>
-
-    <dt><a href="https://github.com/docker/distribution/issues?q=is%3Aclosed">Done</a></dt>
-    <dd>Issues marked with this label are complete. This can be considered a psuedo-label, in that if it is closed, it is considered "Done".</dd>
-</dl>
-
-If an issue or PR is not labeled correctly or you believe it is not in the right state, please contact a maintainer to fix the problem.
-
-## Milestones
-
-Issues and PRs should be assigned to relevant milestones. If an issue or PR is assigned a milestone, it should be available by that date. Depending on level of effort, items may be shuffled in or out of milestones. Issues or PRs that don't have a milestone are considered unscheduled. Typically, "In Progress" issues should have a milestone.
+If you are having trouble getting into the mood of idiomatic Go, we recommend
+reading through [Effective Go](http://golang.org/doc/effective_go.html). The
+[Go Blog](http://blog.golang.org/) is also a great resource. Drinking the
+kool-aid is a lot easier than going thirsty.

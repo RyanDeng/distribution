@@ -10,6 +10,7 @@ import (
 	"github.com/docker/distribution/context"
 	"github.com/docker/distribution/digest"
 	"github.com/docker/distribution/manifest"
+	"github.com/docker/distribution/manifest/schema1"
 	"github.com/docker/distribution/registry/storage/cache/memory"
 	"github.com/docker/distribution/registry/storage/driver"
 	"github.com/docker/distribution/registry/storage/driver/inmemory"
@@ -29,7 +30,10 @@ type manifestStoreTestEnv struct {
 func newManifestStoreTestEnv(t *testing.T, name, tag string) *manifestStoreTestEnv {
 	ctx := context.Background()
 	driver := inmemory.New()
-	registry := NewRegistryWithDriver(ctx, driver, memory.NewInMemoryBlobDescriptorCacheProvider())
+	registry, err := NewRegistry(ctx, driver, BlobDescriptorCacheProvider(memory.NewInMemoryBlobDescriptorCacheProvider()), EnableDelete, EnableRedirect)
+	if err != nil {
+		t.Fatalf("error creating registry: %v", err)
+	}
 
 	repo, err := registry.Repository(ctx, name)
 	if err != nil {
@@ -48,7 +52,11 @@ func newManifestStoreTestEnv(t *testing.T, name, tag string) *manifestStoreTestE
 
 func TestManifestStorage(t *testing.T) {
 	env := newManifestStoreTestEnv(t, "foo/bar", "thetag")
-	ms := env.repository.Manifests()
+	ctx := context.Background()
+	ms, err := env.repository.Manifests(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	exists, err := ms.ExistsByTag(env.tag)
 	if err != nil {
@@ -68,7 +76,7 @@ func TestManifestStorage(t *testing.T) {
 		}
 	}
 
-	m := manifest.Manifest{
+	m := schema1.Manifest{
 		Versioned: manifest.Versioned{
 			SchemaVersion: 1,
 		},
@@ -87,7 +95,7 @@ func TestManifestStorage(t *testing.T) {
 		dgst := digest.Digest(ds)
 
 		testLayers[digest.Digest(dgst)] = rs
-		m.FSLayers = append(m.FSLayers, manifest.FSLayer{
+		m.FSLayers = append(m.FSLayers, schema1.FSLayer{
 			BlobSum: dgst,
 		})
 	}
@@ -97,14 +105,14 @@ func TestManifestStorage(t *testing.T) {
 		t.Fatalf("unexpected error generating private key: %v", err)
 	}
 
-	sm, err := manifest.Sign(&m, pk)
-	if err != nil {
+	sm, merr := schema1.Sign(&m, pk)
+	if merr != nil {
 		t.Fatalf("error signing manifest: %v", err)
 	}
 
 	err = ms.Put(sm)
 	if err == nil {
-		t.Fatalf("expected errors putting manifest")
+		t.Fatalf("expected errors putting manifest with full verification")
 	}
 
 	switch err := err.(type) {
@@ -152,6 +160,7 @@ func TestManifestStorage(t *testing.T) {
 	}
 
 	fetchedManifest, err := ms.GetByTag(env.tag)
+
 	if err != nil {
 		t.Fatalf("unexpected error fetching manifest: %v", err)
 	}
@@ -224,7 +233,7 @@ func TestManifestStorage(t *testing.T) {
 		t.Fatalf("unexpected error generating private key: %v", err)
 	}
 
-	sm2, err := manifest.Sign(&m, pk2)
+	sm2, err := schema1.Sign(&m, pk2)
 	if err != nil {
 		t.Fatalf("unexpected error signing manifest: %v", err)
 	}
@@ -252,7 +261,7 @@ func TestManifestStorage(t *testing.T) {
 		t.Fatalf("unexpected error fetching manifest: %v", err)
 	}
 
-	if _, err := manifest.Verify(fetched); err != nil {
+	if _, err := schema1.Verify(fetched); err != nil {
 		t.Fatalf("unexpected error verifying manifest: %v", err)
 	}
 
@@ -292,11 +301,105 @@ func TestManifestStorage(t *testing.T) {
 		}
 	}
 
-	// TODO(stevvooe): Currently, deletes are not supported due to some
-	// complexity around managing tag indexes. We'll add this support back in
-	// when the manifest format has settled. For now, we expect an error for
-	// all deletes.
-	if err := ms.Delete(dgst); err == nil {
+	// Test deleting manifests
+	err = ms.Delete(dgst)
+	if err != nil {
 		t.Fatalf("unexpected an error deleting manifest by digest: %v", err)
 	}
+
+	exists, err = ms.Exists(dgst)
+	if err != nil {
+		t.Fatalf("Error querying manifest existence")
+	}
+	if exists {
+		t.Errorf("Deleted manifest should not exist")
+	}
+
+	deletedManifest, err := ms.Get(dgst)
+	if err == nil {
+		t.Errorf("Unexpected success getting deleted manifest")
+	}
+	switch err.(type) {
+	case distribution.ErrManifestUnknownRevision:
+		break
+	default:
+		t.Errorf("Unexpected error getting deleted manifest: %s", reflect.ValueOf(err).Type())
+	}
+
+	if deletedManifest != nil {
+		t.Errorf("Deleted manifest get returned non-nil")
+	}
+
+	// Re-upload should restore manifest to a good state
+	err = ms.Put(sm)
+	if err != nil {
+		t.Errorf("Error re-uploading deleted manifest")
+	}
+
+	exists, err = ms.Exists(dgst)
+	if err != nil {
+		t.Fatalf("Error querying manifest existence")
+	}
+	if !exists {
+		t.Errorf("Restored manifest should exist")
+	}
+
+	deletedManifest, err = ms.Get(dgst)
+	if err != nil {
+		t.Errorf("Unexpected error getting manifest")
+	}
+	if deletedManifest == nil {
+		t.Errorf("Deleted manifest get returned non-nil")
+	}
+
+	r, err := NewRegistry(ctx, env.driver, BlobDescriptorCacheProvider(memory.NewInMemoryBlobDescriptorCacheProvider()), EnableRedirect)
+	if err != nil {
+		t.Fatalf("error creating registry: %v", err)
+	}
+	repo, err := r.Repository(ctx, env.name)
+	if err != nil {
+		t.Fatalf("unexpected error getting repo: %v", err)
+	}
+	ms, err = repo.Manifests(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = ms.Delete(dgst)
+	if err == nil {
+		t.Errorf("Unexpected success deleting while disabled")
+	}
+}
+
+// TestLinkPathFuncs ensures that the link path functions behavior are locked
+// down and implemented as expected.
+func TestLinkPathFuncs(t *testing.T) {
+	for _, testcase := range []struct {
+		repo       string
+		digest     digest.Digest
+		linkPathFn linkPathFunc
+		expected   string
+	}{
+		{
+			repo:       "foo/bar",
+			digest:     "sha256:deadbeaf",
+			linkPathFn: blobLinkPath,
+			expected:   "/docker/registry/v2/repositories/foo/bar/_layers/sha256/deadbeaf/link",
+		},
+		{
+			repo:       "foo/bar",
+			digest:     "sha256:deadbeaf",
+			linkPathFn: manifestRevisionLinkPath,
+			expected:   "/docker/registry/v2/repositories/foo/bar/_manifests/revisions/sha256/deadbeaf/link",
+		},
+	} {
+		p, err := testcase.linkPathFn(testcase.repo, testcase.digest)
+		if err != nil {
+			t.Fatalf("unexpected error calling linkPathFn(pm, %q, %q): %v", testcase.repo, testcase.digest, err)
+		}
+
+		if p != testcase.expected {
+			t.Fatalf("incorrect path returned: %q != %q", p, testcase.expected)
+		}
+	}
+
 }

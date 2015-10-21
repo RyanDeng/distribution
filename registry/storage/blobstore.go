@@ -7,13 +7,12 @@ import (
 	"github.com/docker/distribution/registry/storage/driver"
 )
 
-// blobStore implements a the read side of the blob store interface over a
+// blobStore implements the read side of the blob store interface over a
 // driver without enforcing per-repository membership. This object is
 // intentionally a leaky abstraction, providing utility methods that support
 // creating and traversing backend links.
 type blobStore struct {
 	driver  driver.StorageDriver
-	pm      *pathMapper
 	statter distribution.BlobStatter
 }
 
@@ -50,7 +49,7 @@ func (bs *blobStore) Open(ctx context.Context, dgst digest.Digest) (distribution
 		return nil, err
 	}
 
-	return newFileReader(ctx, bs.driver, path, desc.Length)
+	return newFileReader(ctx, bs.driver, path, desc.Size)
 }
 
 // Put stores the content p in the blob store, calculating the digest. If the
@@ -81,7 +80,7 @@ func (bs *blobStore) Put(ctx context.Context, mediaType string, p []byte) (distr
 	// TODO(stevvooe): Write out mediatype here, as well.
 
 	return distribution.Descriptor{
-		Length: int64(len(p)),
+		Size: int64(len(p)),
 
 		// NOTE(stevvooe): The central blob store firewalls media types from
 		// other users. The caller should look this up and override the value
@@ -94,7 +93,7 @@ func (bs *blobStore) Put(ctx context.Context, mediaType string, p []byte) (distr
 // path returns the canonical path for the blob identified by digest. The blob
 // may or may not exist.
 func (bs *blobStore) path(dgst digest.Digest) (string, error) {
-	bp, err := bs.pm.path(blobDataPathSpec{
+	bp, err := pathFor(blobDataPathSpec{
 		digest: dgst,
 	})
 
@@ -140,18 +139,18 @@ func (bs *blobStore) resolve(ctx context.Context, path string) (string, error) {
 
 type blobStatter struct {
 	driver driver.StorageDriver
-	pm     *pathMapper
 }
 
-var _ distribution.BlobStatter = &blobStatter{}
+var _ distribution.BlobDescriptorService = &blobStatter{}
 
 // Stat implements BlobStatter.Stat by returning the descriptor for the blob
 // in the main blob store. If this method returns successfully, there is
 // strong guarantee that the blob exists and is available.
 func (bs *blobStatter) Stat(ctx context.Context, dgst digest.Digest) (distribution.Descriptor, error) {
-	path, err := bs.pm.path(blobDataPathSpec{
+	path, err := pathFor(blobDataPathSpec{
 		digest: dgst,
 	})
+
 	if err != nil {
 		return distribution.Descriptor{}, err
 	}
@@ -179,7 +178,7 @@ func (bs *blobStatter) Stat(ctx context.Context, dgst digest.Digest) (distributi
 	// mediatype that overrides the main one.
 
 	return distribution.Descriptor{
-		Length: fi.Size(),
+		Size: fi.Size(),
 
 		// NOTE(stevvooe): The central blob store firewalls media types from
 		// other users. The caller should look this up and override the value
@@ -187,4 +186,12 @@ func (bs *blobStatter) Stat(ctx context.Context, dgst digest.Digest) (distributi
 		MediaType: "application/octet-stream",
 		Digest:    dgst,
 	}, nil
+}
+
+func (bs *blobStatter) Clear(ctx context.Context, dgst digest.Digest) error {
+	return distribution.ErrUnsupported
+}
+
+func (bs *blobStatter) SetDescriptor(ctx context.Context, dgst digest.Digest, desc distribution.Descriptor) error {
+	return distribution.ErrUnsupported
 }

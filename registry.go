@@ -3,7 +3,7 @@ package distribution
 import (
 	"github.com/docker/distribution/context"
 	"github.com/docker/distribution/digest"
-	"github.com/docker/distribution/manifest"
+	"github.com/docker/distribution/manifest/schema1"
 )
 
 // Scope defines the set of items that match a namespace.
@@ -35,7 +35,16 @@ type Namespace interface {
 	// registry may or may not have the repository but should always return a
 	// reference.
 	Repository(ctx context.Context, name string) (Repository, error)
+
+	// Repositories fills 'repos' with a lexigraphically sorted catalog of repositories
+	// up to the size of 'repos' and returns the value 'n' for the number of entries
+	// which were filled.  'last' contains an offset in the catalog, and 'err' will be
+	// set to io.EOF if there are no more entries to obtain.
+	Repositories(ctx context.Context, repos []string, last string) (n int, err error)
 }
+
+// ManifestServiceOption is a function argument for Manifest Service methods
+type ManifestServiceOption func(ManifestService) error
 
 // Repository is a named collection of manifests and layers.
 type Repository interface {
@@ -43,7 +52,8 @@ type Repository interface {
 	Name() string
 
 	// Manifests returns a reference to this repository's manifest service.
-	Manifests() ManifestService
+	// with the supplied options applied.
+	Manifests(ctx context.Context, options ...ManifestServiceOption) (ManifestService, error)
 
 	// Blobs returns a reference to this repository's blob service.
 	Blobs(ctx context.Context) BlobStore
@@ -66,13 +76,13 @@ type ManifestService interface {
 	Exists(dgst digest.Digest) (bool, error)
 
 	// Get retrieves the identified by the digest, if it exists.
-	Get(dgst digest.Digest) (*manifest.SignedManifest, error)
+	Get(dgst digest.Digest) (*schema1.SignedManifest, error)
 
 	// Delete removes the manifest, if it exists.
 	Delete(dgst digest.Digest) error
 
 	// Put creates or updates the manifest.
-	Put(manifest *manifest.SignedManifest) error
+	Put(manifest *schema1.SignedManifest) error
 
 	// TODO(stevvooe): The methods after this message should be moved to a
 	// discrete TagService, per active proposals.
@@ -84,7 +94,7 @@ type ManifestService interface {
 	ExistsByTag(tag string) (bool, error)
 
 	// GetByTag retrieves the named manifest, if it exists.
-	GetByTag(tag string) (*manifest.SignedManifest, error)
+	GetByTag(tag string, options ...ManifestServiceOption) (*schema1.SignedManifest, error)
 
 	// TODO(stevvooe): There are several changes that need to be done to this
 	// interface:

@@ -24,6 +24,10 @@ import (
 // offset. Any unhashed bytes remaining less than the given offset are hashed
 // from the content uploaded so far.
 func (bw *blobWriter) resumeDigestAt(ctx context.Context, offset int64) error {
+	if !bw.resumableDigestEnabled {
+		return errResumableDigestNotAvailable
+	}
+
 	if offset < 0 {
 		return fmt.Errorf("cannot resume hash at negative offset: %d", offset)
 	}
@@ -100,38 +104,6 @@ func (bw *blobWriter) resumeDigestAt(ctx context.Context, offset int64) error {
 	return nil
 }
 
-// removeResources should clean up all resources associated with the upload
-// instance. An error will be returned if the clean up cannot proceed. If the
-// resources are already not present, no error will be returned.
-func (bw *blobWriter) removeResources(ctx context.Context) error {
-	dataPath, err := bw.blobStore.pm.path(uploadDataPathSpec{
-		name: bw.blobStore.repository.Name(),
-		id:   bw.id,
-	})
-
-	if err != nil {
-		return err
-	}
-
-	// Resolve and delete the containing directory, which should include any
-	// upload related files.
-	dirPath := path.Dir(dataPath)
-	if err := bw.blobStore.driver.Delete(ctx, dirPath); err != nil {
-		switch err := err.(type) {
-		case storagedriver.PathNotFoundError:
-			break // already gone!
-		default:
-			// This should be uncommon enough such that returning an error
-			// should be okay. At this point, the upload should be mostly
-			// complete, but perhaps the backend became unaccessible.
-			context.GetLogger(ctx).Errorf("unable to delete layer upload resources %q: %v", dirPath, err)
-			return err
-		}
-	}
-
-	return nil
-}
-
 type hashStateEntry struct {
 	offset int64
 	path   string
@@ -139,12 +111,13 @@ type hashStateEntry struct {
 
 // getStoredHashStates returns a slice of hashStateEntries for this upload.
 func (bw *blobWriter) getStoredHashStates(ctx context.Context) ([]hashStateEntry, error) {
-	uploadHashStatePathPrefix, err := bw.blobStore.pm.path(uploadHashStatePathSpec{
+	uploadHashStatePathPrefix, err := pathFor(uploadHashStatePathSpec{
 		name: bw.blobStore.repository.Name(),
 		id:   bw.id,
 		alg:  bw.digester.Digest().Algorithm(),
 		list: true,
 	})
+
 	if err != nil {
 		return nil, err
 	}
@@ -175,17 +148,22 @@ func (bw *blobWriter) getStoredHashStates(ctx context.Context) ([]hashStateEntry
 }
 
 func (bw *blobWriter) storeHashState(ctx context.Context) error {
+	if !bw.resumableDigestEnabled {
+		return errResumableDigestNotAvailable
+	}
+
 	h, ok := bw.digester.Hash().(resumable.Hash)
 	if !ok {
 		return errResumableDigestNotAvailable
 	}
 
-	uploadHashStatePath, err := bw.blobStore.pm.path(uploadHashStatePathSpec{
+	uploadHashStatePath, err := pathFor(uploadHashStatePathSpec{
 		name:   bw.blobStore.repository.Name(),
 		id:     bw.id,
 		alg:    bw.digester.Digest().Algorithm(),
 		offset: int64(h.Len()),
 	})
+
 	if err != nil {
 		return err
 	}

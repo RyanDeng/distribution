@@ -6,13 +6,13 @@ import (
 	"github.com/docker/distribution"
 	"github.com/docker/distribution/context"
 	"github.com/docker/distribution/digest"
-	"github.com/docker/distribution/registry/api/v2"
+	"github.com/docker/distribution/reference"
 	"github.com/docker/distribution/registry/storage/cache"
 	"github.com/garyburd/redigo/redis"
 )
 
 // redisBlobStatService provides an implementation of
-// BlobDescriptorCacheProvider based on redis. Blob descritors are stored in
+// BlobDescriptorCacheProvider based on redis. Blob descriptors are stored in
 // two parts. The first provide fast access to repository membership through a
 // redis set for each repo. The second is a redis hash keyed by the digest of
 // the layer, providing path, length and mediatype information. There is also
@@ -41,7 +41,7 @@ func NewRedisBlobDescriptorCacheProvider(pool *redis.Pool) cache.BlobDescriptorC
 
 // RepositoryScoped returns the scoped cache.
 func (rbds *redisBlobDescriptorService) RepositoryScoped(repo string) (distribution.BlobDescriptorService, error) {
-	if err := v2.ValidateRepositoryName(repo); err != nil {
+	if _, err := reference.ParseNamed(repo); err != nil {
 		return nil, err
 	}
 
@@ -63,20 +63,44 @@ func (rbds *redisBlobDescriptorService) Stat(ctx context.Context, dgst digest.Di
 	return rbds.stat(ctx, conn, dgst)
 }
 
+func (rbds *redisBlobDescriptorService) Clear(ctx context.Context, dgst digest.Digest) error {
+	if err := dgst.Validate(); err != nil {
+		return err
+	}
+
+	conn := rbds.pool.Get()
+	defer conn.Close()
+
+	// Not atomic in redis <= 2.3
+	reply, err := conn.Do("HDEL", rbds.blobDescriptorHashKey(dgst), "digest", "length", "mediatype")
+	if err != nil {
+		return err
+	}
+
+	if reply == 0 {
+		return distribution.ErrBlobUnknown
+	}
+
+	return nil
+}
+
 // stat provides an internal stat call that takes a connection parameter. This
 // allows some internal management of the connection scope.
 func (rbds *redisBlobDescriptorService) stat(ctx context.Context, conn redis.Conn, dgst digest.Digest) (distribution.Descriptor, error) {
-	reply, err := redis.Values(conn.Do("HMGET", rbds.blobDescriptorHashKey(dgst), "digest", "length", "mediatype"))
+	reply, err := redis.Values(conn.Do("HMGET", rbds.blobDescriptorHashKey(dgst), "digest", "size", "mediatype"))
 	if err != nil {
 		return distribution.Descriptor{}, err
 	}
 
-	if len(reply) < 2 || reply[0] == nil || reply[1] == nil { // don't care if mediatype is nil
+	// NOTE(stevvooe): The "size" field used to be "length". We treat a
+	// missing "size" field here as an unknown blob, which causes a cache
+	// miss, effectively migrating the field.
+	if len(reply) < 3 || reply[0] == nil || reply[1] == nil { // don't care if mediatype is nil
 		return distribution.Descriptor{}, distribution.ErrBlobUnknown
 	}
 
 	var desc distribution.Descriptor
-	if _, err := redis.Scan(reply, &desc.Digest, &desc.Length, &desc.MediaType); err != nil {
+	if _, err := redis.Scan(reply, &desc.Digest, &desc.Size, &desc.MediaType); err != nil {
 		return distribution.Descriptor{}, err
 	}
 
@@ -104,7 +128,7 @@ func (rbds *redisBlobDescriptorService) SetDescriptor(ctx context.Context, dgst 
 func (rbds *redisBlobDescriptorService) setDescriptor(ctx context.Context, conn redis.Conn, dgst digest.Digest, desc distribution.Descriptor) error {
 	if _, err := conn.Do("HMSET", rbds.blobDescriptorHashKey(dgst),
 		"digest", desc.Digest,
-		"length", desc.Length); err != nil {
+		"size", desc.Size); err != nil {
 		return err
 	}
 
@@ -165,6 +189,28 @@ func (rsrbds *repositoryScopedRedisBlobDescriptorService) Stat(ctx context.Conte
 	}
 
 	return upstream, nil
+}
+
+// Clear removes the descriptor from the cache and forwards to the upstream descriptor store
+func (rsrbds *repositoryScopedRedisBlobDescriptorService) Clear(ctx context.Context, dgst digest.Digest) error {
+	if err := dgst.Validate(); err != nil {
+		return err
+	}
+
+	conn := rsrbds.upstream.pool.Get()
+	defer conn.Close()
+
+	// Check membership to repository first
+	member, err := redis.Bool(conn.Do("SISMEMBER", rsrbds.repositoryBlobSetKey(rsrbds.repo), dgst))
+	if err != nil {
+		return err
+	}
+
+	if !member {
+		return distribution.ErrBlobUnknown
+	}
+
+	return rsrbds.upstream.Clear(ctx, dgst)
 }
 
 func (rsrbds *repositoryScopedRedisBlobDescriptorService) SetDescriptor(ctx context.Context, dgst digest.Digest, desc distribution.Descriptor) error {

@@ -25,6 +25,10 @@ type httpBlobUpload struct {
 	closed   bool
 }
 
+func (hbu *httpBlobUpload) Reader() (io.ReadCloser, error) {
+	panic("Not implemented")
+}
+
 func (hbu *httpBlobUpload) handleErrorResponse(resp *http.Response) error {
 	if resp.StatusCode == http.StatusNotFound {
 		return distribution.ErrBlobUploadUnknown
@@ -44,7 +48,7 @@ func (hbu *httpBlobUpload) ReadFrom(r io.Reader) (n int64, err error) {
 		return 0, err
 	}
 
-	if resp.StatusCode != http.StatusAccepted {
+	if !SuccessStatus(resp.StatusCode) {
 		return 0, hbu.handleErrorResponse(resp)
 	}
 
@@ -79,7 +83,7 @@ func (hbu *httpBlobUpload) Write(p []byte) (n int, err error) {
 		return 0, err
 	}
 
-	if resp.StatusCode != http.StatusAccepted {
+	if !SuccessStatus(resp.StatusCode) {
 		return 0, hbu.handleErrorResponse(resp)
 	}
 
@@ -142,7 +146,7 @@ func (hbu *httpBlobUpload) Commit(ctx context.Context, desc distribution.Descrip
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusCreated {
+	if !SuccessStatus(resp.StatusCode) {
 		return distribution.Descriptor{}, hbu.handleErrorResponse(resp)
 	}
 
@@ -160,12 +164,10 @@ func (hbu *httpBlobUpload) Cancel(ctx context.Context) error {
 	}
 	defer resp.Body.Close()
 
-	switch resp.StatusCode {
-	case http.StatusNoContent, http.StatusNotFound:
+	if resp.StatusCode == http.StatusNotFound || SuccessStatus(resp.StatusCode) {
 		return nil
-	default:
-		return hbu.handleErrorResponse(resp)
 	}
+	return hbu.handleErrorResponse(resp)
 }
 
 func (hbu *httpBlobUpload) Close() error {
