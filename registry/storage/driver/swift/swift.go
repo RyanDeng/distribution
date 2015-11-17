@@ -1,3 +1,5 @@
+// +build ignore
+
 // Package swift provides a storagedriver.StorageDriver implementation to
 // store blobs in Openstack Swift object storage.
 //
