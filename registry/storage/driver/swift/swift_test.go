@@ -6,6 +6,7 @@ import (
 	"io/ioutil"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/ncw/swift/swifttest"
@@ -35,8 +36,13 @@ func init() {
 		container          string
 		region             string
 		insecureSkipVerify bool
-		swiftServer        *swifttest.SwiftServer
-		err                error
+		secretKey          string
+		accessKey          string
+		containerKey       bool
+		tempURLMethods     []string
+
+		swiftServer *swifttest.SwiftServer
+		err         error
 	)
 	username = os.Getenv("SWIFT_USERNAME")
 	password = os.Getenv("SWIFT_PASSWORD")
@@ -49,6 +55,10 @@ func init() {
 	container = os.Getenv("SWIFT_CONTAINER_NAME")
 	region = os.Getenv("SWIFT_REGION_NAME")
 	insecureSkipVerify, _ = strconv.ParseBool(os.Getenv("SWIFT_INSECURESKIPVERIFY"))
+	secretKey = os.Getenv("SWIFT_SECRET_KEY")
+	accessKey = os.Getenv("SWIFT_ACCESS_KEY")
+	containerKey, _ = strconv.ParseBool(os.Getenv("SWIFT_TEMPURL_CONTAINERKEY"))
+	tempURLMethods = strings.Split(os.Getenv("SWIFT_TEMPURL_METHODS"), ",")
 
 	if username == "" || password == "" || authURL == "" || container == "" {
 		if swiftServer, err = swifttest.NewSwiftServer("localhost"); err != nil {
@@ -81,6 +91,10 @@ func init() {
 			root,
 			insecureSkipVerify,
 			defaultChunkSize,
+			secretKey,
+			accessKey,
+			containerKey,
+			tempURLMethods,
 		}
 
 		return New(parameters)
