@@ -21,10 +21,8 @@ import (
 	"github.com/docker/distribution/registry/storage/driver/base"
 	"github.com/docker/distribution/registry/storage/driver/factory"
 
-	"github.com/qiniu/api.v7/kodo"
-
-	qiniurs "qbox.us/api/rs.v3"
-	qiniuup "qbox.us/api/up"
+	"qiniupkg.com/api.v7/kodo"
+	"qiniupkg.com/api.v7/kodocli"
 )
 
 const driverName = "qiniu"
@@ -201,11 +199,13 @@ func (d *driver) ReadStream(ctx context.Context, path string, offset int64) (io.
 // beyond the end of the file.
 func (d *driver) WriteStream(ctx context.Context, path string, offset int64, reader io.Reader) (totalRead int64, err error) {
 
-	uptoken := qiniuup.MakeAuthTokenString(d.KodoCli.AccessKey, d.KodoCli.SecretKey, &qiniuup.AuthPolicy{
+	uptoken := d.KodoCli.MakeUptoken(&kodo.PutPolicy{
 		Scope:    d.Bucket.Name + ":" + path,
-		Deadline: 3600 + uint32(time.Now().Unix()),
+		Expires:  3600,
 		Accesses: []string{path},
 	})
+
+	uploader := kodocli.NewUploader(0, nil)
 
 	writeWholeFile := false
 
@@ -243,17 +243,17 @@ func (d *driver) WriteStream(ctx context.Context, path string, offset int64, rea
 	//------------------------
 
 	if writeWholeFile == false {
-		parts := make([]qiniurs.Part, 0)
+		parts := make([]kodocli.Part, 0)
 
 		if offset == 0 {
-			part_Reader := qiniurs.Part{
+			part_Reader := kodocli.Part{
 				FileName: "",
 				R:        tmpF,
 			}
 			parts = append(parts, part_Reader)
 
 			if written < stat.Size() {
-				part_OriginFile2 := qiniurs.Part{
+				part_OriginFile2 := kodocli.Part{
 					Key:  path,
 					From: written,
 					To:   -1,
@@ -262,20 +262,20 @@ func (d *driver) WriteStream(ctx context.Context, path string, offset int64, rea
 			}
 
 		} else if offset == stat.Size() { //因为parts_api有闭区间写错了，故这里先特殊判断offset == stat.Size()
-			part_OriginFile1 := qiniurs.Part{
+			part_OriginFile1 := kodocli.Part{
 				Key:  path,
 				From: 0,
 				To:   -1,
 			}
 			parts = append(parts, part_OriginFile1)
 
-			part_Reader := qiniurs.Part{
+			part_Reader := kodocli.Part{
 				FileName: "",
 				R:        tmpF,
 			}
 			parts = append(parts, part_Reader)
 		} else if offset < stat.Size() {
-			part_OriginFile1 := qiniurs.Part{
+			part_OriginFile1 := kodocli.Part{
 				Key:  path,
 				From: 0,
 				To:   offset,
@@ -283,14 +283,14 @@ func (d *driver) WriteStream(ctx context.Context, path string, offset int64, rea
 			parts = append(parts, part_OriginFile1)
 
 			appendSize := written + offset
-			part_Reader := qiniurs.Part{
+			part_Reader := kodocli.Part{
 				FileName: "",
 				R:        tmpF,
 			}
 			parts = append(parts, part_Reader)
 
 			if appendSize < stat.Size() {
-				part_OriginFile2 := qiniurs.Part{
+				part_OriginFile2 := kodocli.Part{
 					Key:  path,
 					From: appendSize,
 					To:   -1,
@@ -298,7 +298,7 @@ func (d *driver) WriteStream(ctx context.Context, path string, offset int64, rea
 				parts = append(parts, part_OriginFile2)
 			}
 		} else if offset > stat.Size() {
-			part_OriginFile1 := qiniurs.Part{
+			part_OriginFile1 := kodocli.Part{
 				Key:  path,
 				From: 0,
 				To:   -1,
@@ -306,17 +306,17 @@ func (d *driver) WriteStream(ctx context.Context, path string, offset int64, rea
 			parts = append(parts, part_OriginFile1)
 
 			zeroBytes := make([]byte, offset-stat.Size())
-			part_ZeroPart := qiniurs.Part{
+			part_ZeroPart := kodocli.Part{
 				R: bytes.NewReader(zeroBytes),
 			}
 			parts = append(parts, part_ZeroPart)
 
-			part_Reader := qiniurs.Part{
+			part_Reader := kodocli.Part{
 				R: tmpF,
 			}
 			parts = append(parts, part_Reader)
 		}
-		err = qiniurs.PutParts(nil, nil, uptoken, path, true, parts, nil)
+		err = uploader.PutParts(nil, nil, uptoken, path, true, parts, nil)
 		if err != nil {
 			return 0, err
 		}
