@@ -6,7 +6,7 @@ log:
 storage:
     qiniu:
         accesskey: xxxx
-        secretKey: xxx
+        secretkey: xxx
         bucket: registry
         domain: 7xo9fd.com0.z0.glb.clouddn.com
         useruid: 1380448066

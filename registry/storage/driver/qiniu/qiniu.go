@@ -84,7 +84,7 @@ func FromParameters(parameters map[string]interface{}) (*Driver, error) {
 	if !ok || fmt.Sprint(accessKey) == "" {
 		return nil, fmt.Errorf("No accessKey parameter provided")
 	}
-	secretKey, ok := parameters["secretKey"]
+	secretKey, ok := parameters["secretkey"]
 	if !ok || fmt.Sprint(secretKey) == "" {
 		return nil, fmt.Errorf("No secretKey parameter provided")
 	}
