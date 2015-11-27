@@ -9,6 +9,10 @@ storage:
         secretKey: xxx
         bucket: registry
         domain: 7xo9fd.com0.z0.glb.clouddn.com
+        useruid: 1380448066
+        adminak: xxx
+        adminsk: xxx
+        refreshcacheurl: http://apihub-z0.qbox.me/mc/del
     cache:
         blobdescriptor: inmemory
     redirect:

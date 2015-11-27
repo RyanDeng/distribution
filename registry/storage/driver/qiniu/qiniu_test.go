@@ -17,12 +17,20 @@ func init() {
 	accessKey := os.Getenv("QINIU_AK")
 	secretKey := os.Getenv("QINIU_SK")
 
+	adminAk := os.Getenv("ADMIN_AK")
+	adminSk := os.Getenv("ADMIN_SK")
+
 	driverConstructor := func() (storagedriver.StorageDriver, error) {
 		parameters := DriverParameters{
 			AccessKey: accessKey,
 			SecretKey: secretKey,
-			Bucket:    "registry",
-			Domain:    "7xo9fd.com0.z0.glb.clouddn.com",
+			Bucket:    "registry-test",
+			Domain:    "7xonbo.com0.z0.glb.clouddn.com",
+
+			UserUid:         "1380448066",
+			AdminAk:         adminAk,
+			AdminSk:         adminSk,
+			RefreshCacheUrl: "http://apihub-z0.qbox.me/mc/del",
 		}
 
 		return New(parameters)

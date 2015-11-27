@@ -6,6 +6,7 @@ package qiniu
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -21,6 +22,7 @@ import (
 	"github.com/docker/distribution/registry/storage/driver/base"
 	"github.com/docker/distribution/registry/storage/driver/factory"
 
+	"qiniupkg.com/api.v7/auth/qbox"
 	"qiniupkg.com/api.v7/kodo"
 	"qiniupkg.com/api.v7/kodocli"
 )
@@ -33,7 +35,11 @@ type DriverParameters struct {
 	SecretKey string
 	Bucket    string
 	Domain    string
-	//ChunkSize int64
+
+	UserUid         string
+	AdminAk         string
+	AdminSk         string
+	RefreshCacheUrl string
 }
 
 func init() {
@@ -48,14 +54,13 @@ func (factory *qiniuDriverFactory) Create(parameters map[string]interface{}) (st
 
 type driver struct {
 	Domain string
-	//Bucket string
-	//ChunkSize int64
 
 	KodoCli *kodo.Client
 	Bucket  kodo.Bucket
 
-	//pool  sync.Pool // pool []byte buffers used for WriteStream
-	//zeros []byte // shared, zero-valued buffer used for WriteStream
+	UserUid         uint32
+	RefreshCacheCli *http.Client
+	RefreshCacheUrl string
 }
 
 type baseEmbed struct {
@@ -94,12 +99,36 @@ func FromParameters(parameters map[string]interface{}) (*Driver, error) {
 		return nil, fmt.Errorf("No domain paramter provided")
 	}
 
+	adminAk, ok := parameters["adminak"]
+	if !ok || fmt.Sprint(adminAk) == "" {
+		return nil, fmt.Errorf("No adminAk paramter provided")
+	}
+
+	adminSk, ok := parameters["adminsk"]
+	if !ok || fmt.Sprint(adminSk) == "" {
+		return nil, fmt.Errorf("No adminSk paramter provided")
+	}
+
+	refreshCacheUrl, ok := parameters["refreshcacheurl"]
+	if !ok || fmt.Sprint(refreshCacheUrl) == "" {
+		return nil, fmt.Errorf("No refreshCacheUrl paramter provided")
+	}
+
+	userUid, ok := parameters["useruid"]
+	if !ok || fmt.Sprint(userUid) == "" {
+		return nil, fmt.Errorf("No userUid paramter provided")
+	}
+
 	params := DriverParameters{
 		fmt.Sprint(accessKey),
 		fmt.Sprint(secretKey),
 		fmt.Sprint(bucket),
 		fmt.Sprint(domain),
-		//defaultChunkSize,
+
+		fmt.Sprint(userUid),
+		fmt.Sprint(adminAk),
+		fmt.Sprint(adminSk),
+		fmt.Sprint(refreshCacheUrl),
 	}
 
 	return New(params)
@@ -112,18 +141,22 @@ func New(params DriverParameters) (*Driver, error) {
 		SecretKey: params.SecretKey,
 	})
 
+	refreshCacheCli := qbox.NewClient(qbox.NewMac(params.AdminAk, params.AdminSk), nil)
+	userUid, err := strconv.ParseUint(params.UserUid, 10, 32)
+	if err != nil {
+		userUid = 0
+	}
+
 	d := &driver{
 		Domain: params.Domain,
 		Bucket: cli.Bucket(params.Bucket),
-		//ChunkSize: params.ChunkSize,
-		//zeros:     make([]byte, params.ChunkSize),
 
 		KodoCli: cli,
-	}
 
-	// d.pool.New = func() interface{} {
-	// 	return make([]byte, d.ChunkSize)
-	// }
+		UserUid:         uint32(userUid),
+		RefreshCacheCli: refreshCacheCli,
+		RefreshCacheUrl: params.RefreshCacheUrl,
+	}
 
 	return &Driver{
 		baseEmbed: baseEmbed{
@@ -158,8 +191,12 @@ func (d *driver) GetContent(ctx context.Context, path string) ([]byte, error) {
 // PutContent stores the []byte content at a location designated by "path".
 func (d *driver) PutContent(ctx context.Context, path string, contents []byte) error {
 
-	return d.Bucket.Put(ctx, nil, path, bytes.NewReader(contents), int64(len(contents)), nil)
-
+	err := d.Bucket.Put(ctx, nil, path, bytes.NewReader(contents), int64(len(contents)), nil)
+	if err != nil {
+		return err
+	}
+	d.refreshCache(path)
+	return nil
 }
 
 // ReadStream retrieves an io.ReadCloser for the content stored at "path" with a
@@ -327,6 +364,8 @@ func (d *driver) WriteStream(ctx context.Context, path string, offset int64, rea
 		}
 	}
 
+	d.refreshCache(path)
+
 	return written, nil
 }
 
@@ -475,6 +514,25 @@ func (d *driver) delete(ctx context.Context, path string) error {
 
 }
 
+func (d *driver) refreshCache(path string) {
+	if path == "" {
+		return
+	}
+
+	key := base64.URLEncoding.EncodeToString([]byte(d.buildMemcacheKey(path)))
+	resp, err := d.RefreshCacheCli.Get(d.RefreshCacheUrl + "/" + key)
+	if err != nil {
+		fmt.Println("refresh failed", err)
+		return
+	}
+	resp.Body.Close()
+	fmt.Println("refresh successfully")
+}
+
+func (d *driver) buildMemcacheKey(path string) string {
+	return "io:" + strconv.FormatUint(uint64(d.UserUid), 36) + ":" + d.Bucket.Name + ":" + path
+}
+
 // URLFor returns a URL which may be used to retrieve the content stored at the given path.
 // May return an UnsupportedMethodErr in certain StorageDriver implementations.
 func (d *driver) URLFor(ctx context.Context, path string, options map[string]interface{}) (string, error) {
@@ -487,13 +545,3 @@ func (d *driver) downloadUrl(path string) string {
 
 	return privateUrl
 }
-
-// // getbuf returns a buffer from the driver's pool with length d.ChunkSize.
-// func (d *driver) getbuf() []byte {
-// 	return d.pool.Get().([]byte)
-// }
-
-// func (d *driver) putbuf(p []byte) {
-// 	copy(p, d.zeros)
-// 	d.pool.Put(p)
-// }

@@ -190,14 +190,14 @@ func (suite *DriverSuite) TestWriteReadNonUTF8(c *check.C) {
 
 // TestTruncate tests that putting smaller contents than an original file does
 // remove the excess contents.
-// func (suite *DriverSuite) TestTruncate(c *check.C) {
-// 	filename := randomPath(32)
-// 	contents := randomContents(1024 * 1024)
-// 	suite.writeReadCompare(c, filename, contents)
+func (suite *DriverSuite) TestTruncate(c *check.C) {
+	filename := randomPath(32)
+	contents := randomContents(1024 * 1024)
+	suite.writeReadCompare(c, filename, contents)
 
-// 	contents = randomContents(1024)
-// 	suite.writeReadCompare(c, filename, contents)
-// }
+	contents = randomContents(1024)
+	suite.writeReadCompare(c, filename, contents)
+}
 
 // TestReadNonexistent tests reading content from an empty path.
 func (suite *DriverSuite) TestReadNonexistent(c *check.C) {
@@ -430,7 +430,6 @@ func (suite *DriverSuite) testContinueStreamAppend(c *check.C, chunkSize int64) 
 	c.Assert(fi, check.NotNil)
 	c.Assert(fi.Size(), check.Equals, int64(len(fullContents)))
 
-	time.Sleep(5 * time.Second)
 	received, err = suite.StorageDriver.GetContent(suite.ctx, filename)
 	c.Assert(err, check.IsNil)
 	c.Assert(len(received), check.Equals, len(fullContents))
