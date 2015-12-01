@@ -509,7 +509,11 @@ func (d *driver) delete(ctx context.Context, path string) error {
 		}
 	} else {
 		//it's a 'file', so delete it directly
-		return d.Bucket.Delete(ctx, path)
+		err = d.Bucket.Delete(ctx, path)
+		if err == nil {
+			d.refreshCache(path)
+		}
+		return err
 	}
 
 }
