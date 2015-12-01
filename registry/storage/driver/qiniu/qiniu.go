@@ -165,6 +165,7 @@ func New(params DriverParameters) (*Driver, error) {
 		Bucket: cli.Bucket(params.Bucket),
 
 		KodoCli: cli,
+		Zone:    int(zone),
 
 		UserUid:         uint32(userUid),
 		RefreshCacheCli: refreshCacheCli,
@@ -255,7 +256,7 @@ func (d *driver) WriteStream(ctx context.Context, path string, offset int64, rea
 		Accesses: []string{path},
 	})
 
-	uploader := kodocli.NewUploader(0, nil)
+	uploader := kodocli.NewUploader(d.Zone, nil)
 
 	writeWholeFile := false
 
