@@ -35,6 +35,7 @@ type DriverParameters struct {
 	SecretKey string
 	Bucket    string
 	Domain    string
+	Zone      string
 
 	UserUid         string
 	AdminAk         string
@@ -57,6 +58,7 @@ type driver struct {
 
 	KodoCli *kodo.Client
 	Bucket  kodo.Bucket
+	Zone    int
 
 	UserUid         uint32
 	RefreshCacheCli *http.Client
@@ -99,6 +101,11 @@ func FromParameters(parameters map[string]interface{}) (*Driver, error) {
 		return nil, fmt.Errorf("No domain paramter provided")
 	}
 
+	zone, ok := parameters["zone"]
+	if !ok || fmt.Sprint(zone) == "" {
+		return nil, fmt.Errorf("No zone paramter provided")
+	}
+
 	adminAk, ok := parameters["adminak"]
 	if !ok || fmt.Sprint(adminAk) == "" {
 		return nil, fmt.Errorf("No adminAk paramter provided")
@@ -124,6 +131,7 @@ func FromParameters(parameters map[string]interface{}) (*Driver, error) {
 		fmt.Sprint(secretKey),
 		fmt.Sprint(bucket),
 		fmt.Sprint(domain),
+		fmt.Sprint(zone),
 
 		fmt.Sprint(userUid),
 		fmt.Sprint(adminAk),
@@ -136,7 +144,12 @@ func FromParameters(parameters map[string]interface{}) (*Driver, error) {
 
 func New(params DriverParameters) (*Driver, error) {
 
-	cli := kodo.New(0, &kodo.Config{
+	zone, err := strconv.ParseInt(params.Zone, 10, 32)
+	if err != nil {
+		zone = 0
+	}
+
+	cli := kodo.New(int(zone), &kodo.Config{
 		AccessKey: params.AccessKey,
 		SecretKey: params.SecretKey,
 	})

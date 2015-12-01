@@ -13,10 +13,13 @@ storage:
         adminak: xxx
         adminsk: xxx
         refreshcacheurl: http://apihub-z0.qbox.me/mc/del
+        zone: 0
     cache:
         blobdescriptor: inmemory
     redirect:
         disable: true
+    delete:
+        enabled: true
 http:
     addr: :5000
     secret: asecretforlocaldevelopment
