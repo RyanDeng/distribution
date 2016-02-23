@@ -512,7 +512,7 @@ func (d *driver) delete(ctx context.Context, path string) error {
 		for _, f := range files {
 			errF := d.delete(ctx, f)
 			if errF != nil {
-				errMsg += fmt.Sprintf("faile to delete %s *** ", f)
+				errMsg += fmt.Sprintf("faile to delete %s *** %v", f, errF)
 			}
 		}
 
