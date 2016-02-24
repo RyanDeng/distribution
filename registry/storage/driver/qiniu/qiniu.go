@@ -429,14 +429,28 @@ func (d *driver) List(ctx context.Context, path string) ([]string, error) {
 		queryPath = path
 	}
 
-	limitPerQuery := 100
+	limitPerQuery := 50
 	marker := ""
 	entries := make([]kodo.ListItem, 0)
 	folders := make([]string, 0)
 	for {
-		tmpEntries, tmpCommonPrefix, markerOut, err := d.Bucket.List(ctx, queryPath, "/", marker, limitPerQuery)
-		if err != nil && err != io.EOF {
-			return nil, err
+		var (
+			tmpEntries      []kodo.ListItem
+			tmpCommonPrefix []string
+			markerOut       string
+			err             error
+		)
+		for i := 0; i < 2; i++ {
+			tmpEntries, tmpCommonPrefix, markerOut, err = d.Bucket.List(ctx, queryPath, "/", marker, limitPerQuery)
+			if err != nil && err != io.EOF {
+				if i == 0 {
+					fmt.Println("retry to list")
+					continue
+				}
+				fmt.Println("list error:", err)
+				return nil, err
+			}
+			break
 		}
 		entries = append(entries, tmpEntries...)
 		folders = append(folders, tmpCommonPrefix...)
